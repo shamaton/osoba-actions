@@ -73,7 +73,7 @@ jobs:
       - name: Commit and push osoba changes
         id: osoba_commit
         run: |
-          if git -C "$SUBMODULE_PATH" diff --quiet; then
+          if [ -z "$(git -C "$SUBMODULE_PATH" status --porcelain)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No changes in $SUBMODULE_PATH."
             exit 0
