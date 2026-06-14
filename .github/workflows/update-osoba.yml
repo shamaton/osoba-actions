@@ -1,0 +1,99 @@
+name: Update osoba repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_test_message:
+        description: "Message appended to the smoke test file in the osoba repository"
+        required: false
+        default: "Manual smoke test from osoba-actions"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-osoba-repository
+  cancel-in-progress: false
+
+jobs:
+  update-osoba:
+    runs-on: ubuntu-latest
+
+    env:
+      SUBMODULE_PATH: osoba
+      SUBMODULE_BRANCH: main
+
+    steps:
+      - name: Checkout parent repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Ensure OSOBA_REPO_PAT is configured
+        env:
+          OSOBA_TOKEN: ${{ secrets.OSOBA_REPO_PAT }}
+        run: |
+          if [ -z "$OSOBA_TOKEN" ]; then
+            echo "OSOBA_REPO_PAT is not configured."
+            exit 1
+          fi
+
+      - name: Configure git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Checkout osoba submodule with PAT
+        env:
+          OSOBA_TOKEN: ${{ secrets.OSOBA_REPO_PAT }}
+        run: |
+          git submodule sync -- "$SUBMODULE_PATH"
+          git config "submodule.${SUBMODULE_PATH}.url" "https://x-access-token:${OSOBA_TOKEN}@github.com/shamaton/osoba.git"
+          git submodule update --init -- "$SUBMODULE_PATH"
+
+          git -C "$SUBMODULE_PATH" remote set-url origin "https://x-access-token:${OSOBA_TOKEN}@github.com/shamaton/osoba.git"
+          git -C "$SUBMODULE_PATH" fetch origin "$SUBMODULE_BRANCH"
+          git -C "$SUBMODULE_PATH" checkout "$SUBMODULE_BRANCH"
+          git -C "$SUBMODULE_PATH" pull --ff-only origin "$SUBMODULE_BRANCH"
+
+      - name: Update smoke test file in osoba
+        env:
+          SMOKE_TEST_MESSAGE: ${{ inputs.smoke_test_message }}
+        run: |
+          {
+            echo "## $SMOKE_TEST_MESSAGE"
+            echo
+            echo "- Source repository: $GITHUB_REPOSITORY"
+            echo "- Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+          } >> "$SUBMODULE_PATH/.osoba-actions-smoke-test.md"
+
+      - name: Commit and push osoba changes
+        id: osoba_commit
+        run: |
+          if git -C "$SUBMODULE_PATH" diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes in $SUBMODULE_PATH."
+            exit 0
+          fi
+
+          git -C "$SUBMODULE_PATH" add .osoba-actions-smoke-test.md
+          git -C "$SUBMODULE_PATH" commit -m "chore: smoke test from osoba-actions"
+          git -C "$SUBMODULE_PATH" push origin "HEAD:$SUBMODULE_BRANCH"
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit updated submodule pointer
+        if: steps.osoba_commit.outputs.changed == 'true'
+        run: |
+          git add "$SUBMODULE_PATH"
+
+          if git diff --cached --quiet; then
+            echo "No parent repository changes."
+            exit 0
+          fi
+
+          git commit -m "chore: update osoba submodule pointer"
+          git push origin HEAD
