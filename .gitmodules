@@ -1,0 +1,3 @@
+[submodule "osoba"]
+	path = osoba
+	url = git@github.com:shamaton/osoba.git
