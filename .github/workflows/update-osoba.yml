@@ -2,8 +2,8 @@ name: Update
 
 on:
   schedule:
-    # 17:06, 17:36, ..., 23:06, 23:36 JST
-    - cron: "6,36 8-14 * * *"
+    # 17:06, 17:36, ..., 23:06, 23:36 JST, Monday-Friday
+    - cron: "6,36 8-14 * * 1-5"
   workflow_dispatch:
     inputs:
       ranking_date:
