@@ -6,8 +6,8 @@ on:
     - cron: "0,30 12-14 * * *"
   workflow_dispatch:
     inputs:
-      report_date:
-        description: "Report date in JST as YYYYMMDD. Defaults to today in JST."
+      ranking_date:
+        description: "Ranking date in JST as YYYYMMDD. Defaults to today in JST."
         required: false
         default: ""
 
@@ -15,11 +15,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: update-osoba-ranking-report-${{ github.ref }}
+  group: update-osoba-ranking-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  update-ranking-report:
+  update-ranking:
     runs-on: ubuntu-latest
 
     env:
@@ -61,81 +61,81 @@ jobs:
           git -C "$SUBMODULE_PATH" checkout "$SUBMODULE_BRANCH"
           git -C "$SUBMODULE_PATH" pull --ff-only origin "$SUBMODULE_BRANCH"
 
-      - name: Resolve report path
-        id: report
+      - name: Resolve ranking path
+        id: ranking
         env:
-          INPUT_REPORT_DATE: ${{ inputs.report_date }}
+          INPUT_RANKING_DATE: ${{ inputs.ranking_date }}
         run: |
-          report_date="$INPUT_REPORT_DATE"
-          if [ -z "$report_date" ]; then
-            report_date="$(date +'%Y%m%d')"
+          ranking_date="$INPUT_RANKING_DATE"
+          if [ -z "$ranking_date" ]; then
+            ranking_date="$(date +'%Y%m%d')"
           fi
 
-          if ! printf '%s' "$report_date" | grep -Eq '^[0-9]{8}$'; then
-            echo "report_date must be YYYYMMDD: $report_date"
+          if ! printf '%s' "$ranking_date" | grep -Eq '^[0-9]{8}$'; then
+            echo "ranking_date must be YYYYMMDD: $ranking_date"
             exit 1
           fi
 
-          report_year="${report_date%????}"
-          report_month="${report_date#????}"
-          report_month="${report_month%??}"
-          report_path="reports/${report_year}/${report_month}/${report_date}.csv"
+          ranking_year="${ranking_date%????}"
+          ranking_month="${ranking_date#????}"
+          ranking_month="${ranking_month%??}"
+          ranking_path="ranking/${ranking_year}/${ranking_month}/${ranking_date}.csv"
 
-          echo "date=$report_date" >> "$GITHUB_OUTPUT"
-          echo "path=$report_path" >> "$GITHUB_OUTPUT"
-          echo "full_path=${SUBMODULE_PATH}/${report_path}" >> "$GITHUB_OUTPUT"
+          echo "date=$ranking_date" >> "$GITHUB_OUTPUT"
+          echo "path=$ranking_path" >> "$GITHUB_OUTPUT"
+          echo "full_path=${SUBMODULE_PATH}/${ranking_path}" >> "$GITHUB_OUTPUT"
 
-      - name: Skip when report already exists
-        id: existing_report
+      - name: Skip when ranking CSV already exists
+        id: existing_ranking
         run: |
-          report_path="${{ steps.report.outputs.path }}"
-          if [ -s "${SUBMODULE_PATH}/${report_path}" ]; then
+          ranking_path="${{ steps.ranking.outputs.path }}"
+          if [ -s "${SUBMODULE_PATH}/${ranking_path}" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Report already exists: ${SUBMODULE_PATH}/${report_path}"
+            echo "Ranking CSV already exists: ${SUBMODULE_PATH}/${ranking_path}"
             exit 0
           fi
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Setup Go
-        if: steps.existing_report.outputs.skip != 'true'
+        if: steps.existing_ranking.outputs.skip != 'true'
         uses: actions/setup-go@v6
         with:
           go-version-file: ${{ env.SUBMODULE_PATH }}/go.mod
           cache: false
 
-      - name: Generate report
-        if: steps.existing_report.outputs.skip != 'true'
+      - name: Generate ranking CSV
+        if: steps.existing_ranking.outputs.skip != 'true'
         run: |
-          report_path="${{ steps.report.outputs.path }}"
-          mkdir -p "$(dirname "${SUBMODULE_PATH}/${report_path}")"
+          ranking_path="${{ steps.ranking.outputs.path }}"
+          mkdir -p "$(dirname "${SUBMODULE_PATH}/${ranking_path}")"
 
           go -C "$SUBMODULE_PATH" run ./cmd/ranking \
-            -output "$report_path"
+            -output "$ranking_path"
 
-          test -s "${SUBMODULE_PATH}/${report_path}"
+          test -s "${SUBMODULE_PATH}/${ranking_path}"
 
-      - name: Commit and push osoba report
-        if: steps.existing_report.outputs.skip != 'true'
+      - name: Commit and push osoba ranking CSV
+        if: steps.existing_ranking.outputs.skip != 'true'
         id: osoba_commit
         run: |
-          report_path="${{ steps.report.outputs.path }}"
+          ranking_path="${{ steps.ranking.outputs.path }}"
 
-          git -C "$SUBMODULE_PATH" add "$report_path"
+          git -C "$SUBMODULE_PATH" add "$ranking_path"
 
           if git -C "$SUBMODULE_PATH" diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No report changes in $SUBMODULE_PATH."
+            echo "No ranking CSV changes in $SUBMODULE_PATH."
             exit 0
           fi
 
-          git -C "$SUBMODULE_PATH" commit -m "chore: add ranking report ${{ steps.report.outputs.date }}"
+          git -C "$SUBMODULE_PATH" commit -m "chore: add ranking CSV ${{ steps.ranking.outputs.date }}"
           git -C "$SUBMODULE_PATH" push origin "HEAD:$SUBMODULE_BRANCH"
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated submodule pointer
-        if: steps.existing_report.outputs.skip == 'true' || steps.osoba_commit.outputs.changed == 'true'
+        if: steps.existing_ranking.outputs.skip == 'true' || steps.osoba_commit.outputs.changed == 'true'
         run: |
           git add "$SUBMODULE_PATH"
 
