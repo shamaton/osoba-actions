@@ -1,4 +1,4 @@
-name: Update osoba ranking report
+name: Update
 
 on:
   schedule:
