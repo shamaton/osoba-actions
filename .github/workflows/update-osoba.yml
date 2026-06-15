@@ -2,8 +2,8 @@ name: Update
 
 on:
   schedule:
-    # 21:00, 21:30, 22:00, 22:30, 23:00, 23:30 JST
-    - cron: "0,30 12-14 * * *"
+    # 17:06, 17:36, ..., 23:06, 23:36 JST
+    - cron: "6,36 8-14 * * *"
   workflow_dispatch:
     inputs:
       ranking_date:
@@ -107,21 +107,14 @@ jobs:
       - name: Generate ranking CSV
         if: steps.existing_ranking.outputs.skip != 'true'
         run: |
-          ranking_path="${{ steps.ranking.outputs.path }}"
-          mkdir -p "$(dirname "${SUBMODULE_PATH}/${ranking_path}")"
-
           go -C "$SUBMODULE_PATH" run ./cmd/ranking \
-            -output "$ranking_path"
-
-          test -s "${SUBMODULE_PATH}/${ranking_path}"
+            -output-dir ranking
 
       - name: Commit and push osoba ranking CSV
         if: steps.existing_ranking.outputs.skip != 'true'
         id: osoba_commit
         run: |
-          ranking_path="${{ steps.ranking.outputs.path }}"
-
-          git -C "$SUBMODULE_PATH" add "$ranking_path"
+          git -C "$SUBMODULE_PATH" add ranking
 
           if git -C "$SUBMODULE_PATH" diff --cached --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -129,13 +122,21 @@ jobs:
             exit 0
           fi
 
-          git -C "$SUBMODULE_PATH" commit -m "chore: add ranking CSV ${{ steps.ranking.outputs.date }}"
+          changed_file="$(git -C "$SUBMODULE_PATH" diff --cached --name-only -- ranking | head -n 1)"
+          ranking_date="$(basename "$changed_file" .csv)"
+
+          if ! printf '%s' "$ranking_date" | grep -Eq '^[0-9]{8}$'; then
+            echo "Unexpected ranking CSV path: $changed_file"
+            exit 1
+          fi
+
+          git -C "$SUBMODULE_PATH" commit -m "chore: update ranking CSV ${ranking_date}"
           git -C "$SUBMODULE_PATH" push origin "HEAD:$SUBMODULE_BRANCH"
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated submodule pointer
-        if: steps.existing_ranking.outputs.skip == 'true' || steps.osoba_commit.outputs.changed == 'true'
+        if: steps.existing_ranking.outputs.skip == 'true' || steps.osoba_commit.outputs.changed != ''
         run: |
           git add "$SUBMODULE_PATH"
 
