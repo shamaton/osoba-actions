@@ -1,27 +1,31 @@
-name: Update osoba repository
+name: Update osoba ranking report
 
 on:
+  schedule:
+    # 21:00, 21:30, 22:00, 22:30, 23:00, 23:30 JST
+    - cron: "0,30 12-14 * * *"
   workflow_dispatch:
     inputs:
-      smoke_test_message:
-        description: "Message appended to the smoke test file in the osoba repository"
+      report_date:
+        description: "Report date in JST as YYYYMMDD. Defaults to today in JST."
         required: false
-        default: "Manual smoke test from osoba-actions"
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: update-osoba-repository
+  group: update-osoba-ranking-report-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  update-osoba:
+  update-ranking-report:
     runs-on: ubuntu-latest
 
     env:
       SUBMODULE_PATH: osoba
       SUBMODULE_BRANCH: main
+      TZ: Asia/Tokyo
 
     steps:
       - name: Checkout parent repository
@@ -57,36 +61,81 @@ jobs:
           git -C "$SUBMODULE_PATH" checkout "$SUBMODULE_BRANCH"
           git -C "$SUBMODULE_PATH" pull --ff-only origin "$SUBMODULE_BRANCH"
 
-      - name: Update smoke test file in osoba
+      - name: Resolve report path
+        id: report
         env:
-          SMOKE_TEST_MESSAGE: ${{ inputs.smoke_test_message }}
+          INPUT_REPORT_DATE: ${{ inputs.report_date }}
         run: |
-          {
-            echo "## $SMOKE_TEST_MESSAGE"
-            echo
-            echo "- Source repository: $GITHUB_REPOSITORY"
-            echo "- Workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo "- Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            echo
-          } >> "$SUBMODULE_PATH/.osoba-actions-smoke-test.md"
+          report_date="$INPUT_REPORT_DATE"
+          if [ -z "$report_date" ]; then
+            report_date="$(date +'%Y%m%d')"
+          fi
 
-      - name: Commit and push osoba changes
-        id: osoba_commit
+          if ! printf '%s' "$report_date" | grep -Eq '^[0-9]{8}$'; then
+            echo "report_date must be YYYYMMDD: $report_date"
+            exit 1
+          fi
+
+          report_year="${report_date%????}"
+          report_month="${report_date#????}"
+          report_month="${report_month%??}"
+          report_path="reports/${report_year}/${report_month}/${report_date}.csv"
+
+          echo "date=$report_date" >> "$GITHUB_OUTPUT"
+          echo "path=$report_path" >> "$GITHUB_OUTPUT"
+          echo "full_path=${SUBMODULE_PATH}/${report_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when report already exists
+        id: existing_report
         run: |
-          if [ -z "$(git -C "$SUBMODULE_PATH" status --porcelain)" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No changes in $SUBMODULE_PATH."
+          report_path="${{ steps.report.outputs.path }}"
+          if [ -s "${SUBMODULE_PATH}/${report_path}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Report already exists: ${SUBMODULE_PATH}/${report_path}"
             exit 0
           fi
 
-          git -C "$SUBMODULE_PATH" add .osoba-actions-smoke-test.md
-          git -C "$SUBMODULE_PATH" commit -m "chore: smoke test from osoba-actions"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        if: steps.existing_report.outputs.skip != 'true'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.SUBMODULE_PATH }}/go.mod
+          cache: false
+
+      - name: Generate report
+        if: steps.existing_report.outputs.skip != 'true'
+        run: |
+          report_path="${{ steps.report.outputs.path }}"
+          mkdir -p "$(dirname "${SUBMODULE_PATH}/${report_path}")"
+
+          go -C "$SUBMODULE_PATH" run ./cmd/ranking \
+            -output "$report_path"
+
+          test -s "${SUBMODULE_PATH}/${report_path}"
+
+      - name: Commit and push osoba report
+        if: steps.existing_report.outputs.skip != 'true'
+        id: osoba_commit
+        run: |
+          report_path="${{ steps.report.outputs.path }}"
+
+          git -C "$SUBMODULE_PATH" add "$report_path"
+
+          if git -C "$SUBMODULE_PATH" diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No report changes in $SUBMODULE_PATH."
+            exit 0
+          fi
+
+          git -C "$SUBMODULE_PATH" commit -m "chore: add ranking report ${{ steps.report.outputs.date }}"
           git -C "$SUBMODULE_PATH" push origin "HEAD:$SUBMODULE_BRANCH"
 
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated submodule pointer
-        if: steps.osoba_commit.outputs.changed == 'true'
+        if: steps.existing_report.outputs.skip == 'true' || steps.osoba_commit.outputs.changed == 'true'
         run: |
           git add "$SUBMODULE_PATH"
 
