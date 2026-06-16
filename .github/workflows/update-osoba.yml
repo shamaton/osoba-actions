@@ -147,3 +147,47 @@ jobs:
 
           git commit -m "chore: update osoba submodule pointer"
           git push origin HEAD
+
+      - name: Prepare Slack notification
+        id: slack_notification
+        if: always()
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          JOB_STATUS: ${{ job.status }}
+          SKIPPED: ${{ steps.existing_ranking.outputs.skip }}
+          CHANGED: ${{ steps.osoba_commit.outputs.changed }}
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            echo "SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not configured. Skipping Slack notification."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          status="$JOB_STATUS"
+          if [ "$JOB_STATUS" = "success" ]; then
+            if [ "$SKIPPED" = "true" ]; then
+              status="success: skipped existing CSV"
+            elif [ "$CHANGED" = "true" ]; then
+              status="success: committed and pushed"
+            elif [ "$CHANGED" = "false" ]; then
+              status="success: no diff"
+            fi
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack
+        if: always() && steps.slack_notification.outputs.enabled == 'true'
+        uses: slackapi/slack-github-action@v3.0.3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: |
+              :white_check_mark: osoba update workflow completed
+              status: ${{ steps.slack_notification.outputs.status }}
+              ranking_date: ${{ steps.ranking.outputs.date }}
+              path: ${{ steps.ranking.outputs.full_path }}
+              run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
