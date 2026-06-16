@@ -152,12 +152,11 @@ jobs:
 
       - name: Prepare Slack notification
         id: slack_notification
-        if: always()
+        if: always() && (steps.existing_ranking.outputs.skip != 'true' || job.status != 'success')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           JOB_STATUS: ${{ job.status }}
-          SKIPPED: ${{ steps.existing_ranking.outputs.skip }}
           CHANGED: ${{ steps.osoba_commit.outputs.changed }}
         run: |
           if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
@@ -168,9 +167,7 @@ jobs:
 
           status="$JOB_STATUS"
           if [ "$JOB_STATUS" = "success" ]; then
-            if [ "$SKIPPED" = "true" ]; then
-              status="success: skipped existing CSV"
-            elif [ "$CHANGED" = "true" ]; then
+            if [ "$CHANGED" = "true" ]; then
               status="success: committed and pushed"
             elif [ "$CHANGED" = "false" ]; then
               status="success: no diff"
@@ -188,7 +185,7 @@ jobs:
           payload: |
             channel: ${{ secrets.SLACK_CHANNEL_ID }}
             text: |
-              :white_check_mark: osoba update workflow completed
+              <!channel> :white_check_mark: osoba update workflow completed
               status: ${{ steps.slack_notification.outputs.status }}
               ranking_date: ${{ steps.ranking.outputs.date }}
               path: ${{ steps.ranking.outputs.full_path }}
