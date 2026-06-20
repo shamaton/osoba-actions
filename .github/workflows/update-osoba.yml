@@ -81,9 +81,12 @@ jobs:
           ranking_year="${ranking_date%????}"
           ranking_month="${ranking_date#????}"
           ranking_month="${ranking_month%??}"
+          ranking_day="${ranking_date#??????}"
+          ranking_iso_date="${ranking_year}-${ranking_month}-${ranking_day}"
           ranking_path="ranking/${ranking_year}/${ranking_month}/${ranking_date}.csv"
 
           echo "date=$ranking_date" >> "$GITHUB_OUTPUT"
+          echo "iso_date=$ranking_iso_date" >> "$GITHUB_OUTPUT"
           echo "path=$ranking_path" >> "$GITHUB_OUTPUT"
           echo "full_path=${SUBMODULE_PATH}/${ranking_path}" >> "$GITHUB_OUTPUT"
 
@@ -106,14 +109,22 @@ jobs:
           go-version-file: ${{ env.SUBMODULE_PATH }}/go.mod
           cache: false
 
-      - name: Generate ranking CSV
+      - name: Check TSE holiday
+        id: holiday
         if: steps.existing_ranking.outputs.skip != 'true'
+        run: |
+          go -C "$SUBMODULE_PATH" run ./cmd/check-holiday \
+            -date "${{ steps.ranking.outputs.iso_date }}" \
+            -github-output "$GITHUB_OUTPUT"
+
+      - name: Generate ranking CSV
+        if: steps.existing_ranking.outputs.skip != 'true' && steps.holiday.outputs.is_holiday != 'true'
         run: |
           go -C "$SUBMODULE_PATH" run ./cmd/ranking \
             -output-dir ranking
 
       - name: Commit and push osoba ranking CSV
-        if: steps.existing_ranking.outputs.skip != 'true'
+        if: steps.existing_ranking.outputs.skip != 'true' && steps.holiday.outputs.is_holiday != 'true'
         id: osoba_commit
         run: |
           git -C "$SUBMODULE_PATH" add ranking
@@ -138,7 +149,7 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit updated submodule pointer
-        if: steps.existing_ranking.outputs.skip == 'true' || steps.osoba_commit.outputs.changed != ''
+        if: steps.existing_ranking.outputs.skip == 'true' || steps.holiday.outputs.is_holiday == 'true' || steps.osoba_commit.outputs.changed != ''
         run: |
           git add "$SUBMODULE_PATH"
 
@@ -152,7 +163,7 @@ jobs:
 
       - name: Prepare Slack notification
         id: slack_notification
-        if: always() && (steps.existing_ranking.outputs.skip != 'true' || job.status != 'success')
+        if: always() && ((steps.existing_ranking.outputs.skip != 'true' && steps.holiday.outputs.is_holiday != 'true') || job.status != 'success')
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
