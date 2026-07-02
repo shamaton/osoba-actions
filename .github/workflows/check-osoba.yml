@@ -1,0 +1,152 @@
+name: Check
+
+on:
+  # cron is not enough for our needs. Instead, we use this below
+  # https://script.google.com/home/projects/1KmexmtYmAJyCsnMhRaBq4URRZmoqIX-3Um-hxN6woRi5MJYQW1Q49_2n?hl=ja
+  # schedule:
+  # 23:45 JST, Monday-Friday
+  # - cron: "45 14 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      ranking_date:
+        description: "Ranking date in JST as YYYYMMDD. Defaults to today in JST."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-osoba-ranking-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-ranking:
+    runs-on: ubuntu-latest
+
+    env:
+      SUBMODULE_PATH: osoba
+      SUBMODULE_BRANCH: main
+      TZ: Asia/Tokyo
+
+    steps:
+      - name: Checkout parent repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Ensure OSOBA_REPO_PAT is configured
+        env:
+          OSOBA_TOKEN: ${{ secrets.OSOBA_REPO_PAT }}
+        run: |
+          if [ -z "$OSOBA_TOKEN" ]; then
+            echo "OSOBA_REPO_PAT is not configured."
+            exit 1
+          fi
+
+      - name: Checkout osoba submodule with PAT
+        env:
+          OSOBA_TOKEN: ${{ secrets.OSOBA_REPO_PAT }}
+        run: |
+          git submodule sync -- "$SUBMODULE_PATH"
+          git config "submodule.${SUBMODULE_PATH}.url" "https://x-access-token:${OSOBA_TOKEN}@github.com/shamaton/osoba.git"
+          git submodule update --init -- "$SUBMODULE_PATH"
+
+          git -C "$SUBMODULE_PATH" remote set-url origin "https://x-access-token:${OSOBA_TOKEN}@github.com/shamaton/osoba.git"
+          git -C "$SUBMODULE_PATH" fetch origin "$SUBMODULE_BRANCH"
+          git -C "$SUBMODULE_PATH" checkout "$SUBMODULE_BRANCH"
+          git -C "$SUBMODULE_PATH" pull --ff-only origin "$SUBMODULE_BRANCH"
+
+      - name: Resolve ranking path
+        id: ranking
+        env:
+          INPUT_RANKING_DATE: ${{ inputs.ranking_date }}
+        run: |
+          ranking_date="$INPUT_RANKING_DATE"
+          if [ -z "$ranking_date" ]; then
+            ranking_date="$(date +'%Y%m%d')"
+          fi
+
+          if ! printf '%s' "$ranking_date" | grep -Eq '^[0-9]{8}$'; then
+            echo "ranking_date must be YYYYMMDD: $ranking_date"
+            exit 1
+          fi
+
+          ranking_year="${ranking_date%????}"
+          ranking_month="${ranking_date#????}"
+          ranking_month="${ranking_month%??}"
+          ranking_day="${ranking_date#??????}"
+          ranking_iso_date="${ranking_year}-${ranking_month}-${ranking_day}"
+          ranking_path="ranking/${ranking_year}/${ranking_month}/${ranking_date}.csv"
+
+          echo "date=$ranking_date" >> "$GITHUB_OUTPUT"
+          echo "iso_date=$ranking_iso_date" >> "$GITHUB_OUTPUT"
+          echo "path=$ranking_path" >> "$GITHUB_OUTPUT"
+          echo "full_path=${SUBMODULE_PATH}/${ranking_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ env.SUBMODULE_PATH }}/go.mod
+          cache: false
+
+      - name: Check TSE holiday
+        id: holiday
+        run: |
+          go -C "$SUBMODULE_PATH" run ./cmd/check-holiday \
+            -date "${{ steps.ranking.outputs.iso_date }}" \
+            -github-output "$GITHUB_OUTPUT"
+
+      - name: Check ranking CSV exists
+        id: existing_ranking
+        if: steps.holiday.outputs.is_holiday != 'true'
+        run: |
+          ranking_full_path="${{ steps.ranking.outputs.full_path }}"
+
+          if [ ! -f "$ranking_full_path" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Ranking CSV does not exist: $ranking_full_path"
+            exit 1
+          fi
+
+          if [ ! -s "$ranking_full_path" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Ranking CSV is empty: $ranking_full_path"
+            exit 1
+          fi
+
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "Ranking CSV exists: $ranking_full_path"
+
+      - name: Prepare Slack notification
+        id: slack_notification
+        if: always() && (job.status != 'success' || steps.existing_ranking.outputs.exists == 'false')
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            echo "SLACK_BOT_TOKEN or SLACK_CHANNEL_ID is not configured. Skipping Slack notification."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "status=$JOB_STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Slack
+        if: always() && steps.slack_notification.outputs.enabled == 'true'
+        uses: slackapi/slack-github-action@v3.0.3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: |
+              <!channel> :warning: osoba ranking CSV check failed
+              status: ${{ steps.slack_notification.outputs.status }}
+              ranking_date: ${{ steps.ranking.outputs.date }}
+              path: ${{ steps.ranking.outputs.full_path }}
+              run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
